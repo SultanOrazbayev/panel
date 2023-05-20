@@ -1,0 +1,9 @@
+<map id="inheritance712b745e28" name="inheritance712b745e28">
+<area shape="rect" id="node1" href="panel.io.html#panel.io.resources.ResourceComponent" target="_top" title="Mix&#45;in class for components that define a set of resources" alt="" coords="285,5,539,32"/>
+<area shape="rect" id="node6" href="panel.template.html#panel.template.base.BasicTemplate" target="_top" title="BasicTemplate provides a baseclass for templates with a basic" alt="" coords="587,31,815,57"/>
+<area shape="rect" id="node2" href="panel.template.html#panel.template.base.BaseTemplate" target="_top" title="panel.template.base.BaseTemplate" alt="" coords="299,56,525,83"/>
+<area shape="rect" id="node3" title="params(name=String)" alt="" coords="5,5,237,32"/>
+<area shape="rect" id="node4" title="Mixin class to allow rendering and syncing objects in notebook" alt="" coords="13,56,229,83"/>
+<area shape="rect" id="node5" title="Mixin to define methods shared by objects which can served." alt="" coords="24,107,218,133"/>
+<area shape="rect" id="node7" href="#panel.template.vanilla.VanillaTemplate" target="_top" title="VanillaTemplate is built on top of Vanilla web components." alt="" coords="863,31,1106,57"/>
+</map>
