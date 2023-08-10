@@ -834,16 +834,28 @@ class BasicLoginHandler(RequestHandler):
             errormessage = self.get_argument("error")
         except Exception:
             errormessage = ""
-        self.write(self._basic_login_template.render(errormessage=errormessage, PANEL_CDN=CDN_DIST))
+
+        next_url = self.get_argument('next', None)
+        if next_url:
+            self.set_cookie("next_url", next_url)
+        html = self._basic_login_template.render(
+            errormessage=errormessage, PANEL_CDN=CDN_DIST
+        )
+        self.write(html)
 
     def _validate(self, username, password):
-        if os.path.isfile(config.basic_auth):
-            with open(config.basic_auth, encoding='utf-8') as auth_file:
+        if 'basic_auth' in state._server_config.get(self.application, {}):
+            auth_info = state._server_config[self.application]['basic_auth']
+        else:
+            auth_info = config.basic_auth
+        if isinstance(auth_info, str) and os.path.isfile(auth_info):
+            with open(auth_info, encoding='utf-8') as auth_file:
                 auth_info = json.loads(auth_file.read())
+        if isinstance(auth_info, dict):
             if username not in auth_info:
                 return False
             return password == auth_info[username]
-        elif password == config.basic_auth:
+        elif password == auth_info:
             return True
         return False
 
@@ -853,7 +865,8 @@ class BasicLoginHandler(RequestHandler):
         auth = self._validate(username, password)
         if auth:
             self.set_current_user(username)
-            self.redirect("/")
+            next_url = self.get_cookie("next_url", "/")
+            self.redirect(next_url)
         else:
             error_msg = "?error=" + tornado.escape.url_escape("Login incorrect")
             self.redirect('/login' + error_msg)
@@ -871,6 +884,7 @@ class BasicLoginHandler(RequestHandler):
 
 
 class BasicProvider(OAuthProvider):
+
     def __init__(self, basic_login_template=None):
         if basic_login_template is None:
             self._basic_login_template = BASIC_LOGIN_TEMPLATE

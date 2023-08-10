@@ -9,6 +9,7 @@ import importlib
 import inspect
 import os
 import sys
+import warnings
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ from pyviz_comms import (
 
 from .io.logging import panel_log_handler
 from .io.state import state
+from .util import param_watchers
 
 __version__ = str(param.version.Version(
     fpath=__file__, archive_commit="$Format:%h$", reponame="panel"))
@@ -130,6 +132,10 @@ class _config(_base_config):
     design = param.ClassSelector(class_=None, is_instance=False, doc="""
         The design system to use to style components.""")
 
+    disconnect_notification = param.String(doc="""
+        The notification to display to the user when the connection
+        to the server is dropped.""")
+
     exception_handler = param.Callable(default=None, doc="""
         General exception handler for events.""")
 
@@ -166,6 +172,10 @@ class _config(_base_config):
     profiler = param.Selector(default=None, allow_None=True, objects=[
         'pyinstrument', 'snakeviz', 'memray'], doc="""
         The profiler engine to enable.""")
+
+    ready_notification = param.String(doc="""
+        The notification to display when the application is ready and
+        fully loaded.""")
 
     reuse_sessions = param.Boolean(default=False, doc="""
         Whether to reuse a session for the initial request to speed up
@@ -252,9 +262,10 @@ class _config(_base_config):
         Whenever an event arrives from the frontend it will be
         dispatched to the thread pool to be processed.""")
 
-    _basic_auth = param.ObjectSelector(
-        default=None, allow_None=True, objects=[], doc="""
-        Use Basic authentication.""")
+    _basic_auth = param.ClassSelector(default=None, class_=(dict, str), allow_None=True, doc="""
+        Password, dictionary with a mapping from username to password
+        or filepath containing JSON to use with the basic auth
+        provider.""")
 
     _oauth_provider = param.ObjectSelector(
         default=None, allow_None=True, objects=[], doc="""
@@ -323,13 +334,18 @@ class _config(_base_config):
         state._thread_pool = ThreadPoolExecutor(max_workers=threads)
 
     @param.depends('notifications', watch=True)
-    def _enable_notifications(self):
+    def _setup_notifications(self):
         from .io.notifications import NotificationArea
         from .reactive import ReactiveHTMLMetaclass
         if self.notifications and 'notifications' not in ReactiveHTMLMetaclass._loaded_extensions:
             ReactiveHTMLMetaclass._loaded_extensions.add('notifications')
         if not state.curdoc:
             state._notification = NotificationArea()
+
+    @param.depends('disconnect_notification', 'ready_notification', watch=True)
+    def _enable_notifications(self):
+        if self.disconnect_notification or self.ready_notification:
+            self.notifications = True
 
     @contextmanager
     def set(self, **kwargs):
@@ -349,10 +365,16 @@ class _config(_base_config):
 
     def __setattr__(self, attr, value):
         from .io.state import state
-        if not getattr(self, 'initialized', False) or (attr.startswith('_') and attr.endswith('_')) or attr == '_validating':
+
+        # _param__private added in Param 2
+        if hasattr(self, '_param__private'):
+            init = getattr(self._param__private, 'initialized', False)
+        else:
+            init = getattr(self, 'initialized', False)
+        if not init or (attr.startswith('_') and attr.endswith('_')) or attr == '_validating':
             return super().__setattr__(attr, value)
         value = getattr(self, f'_{attr}_hook', lambda x: x)(value)
-        if attr in self._globals:
+        if attr in self._globals or self.param._TRIGGER:
             super().__setattr__(attr if attr in self.param else f'_{attr}', value)
         elif state.curdoc is not None:
             if attr in self.param:
@@ -364,6 +386,9 @@ class _config(_base_config):
             if state.curdoc not in self._session_config:
                 self._session_config[state.curdoc] = {}
             self._session_config[state.curdoc][attr] = value
+            watchers = param_watchers(self).get(attr, {}).get('value', [])
+            for w in watchers:
+                w.fn()
         elif f'_{attr}' in self.param and hasattr(self, f'_{attr}_'):
             validate_config(self, f'_{attr}', value)
             super().__setattr__(f'_{attr}_', value)
@@ -387,7 +412,12 @@ class _config(_base_config):
         end up being modified.
         """
         from .io.state import state
-        init = super().__getattribute__('initialized')
+
+        # _param__private added in Param 2
+        try:
+            init = super().__getattribute__('_param__private').initialized
+        except AttributeError:
+            init = super().__getattribute__('initialized')
         global_params = super().__getattribute__('_globals')
         if init and not attr.startswith('__'):
             params = super().__getattribute__('param')
@@ -605,6 +635,7 @@ class panel_extension(_pyviz_extension):
         'gridstack': ['GridStack'],
         'katex': ['katex'],
         'mathjax': ['MathJax'],
+        'perspective': ['perspective'],
         'plotly': ['Plotly'],
         'tabulator': ['Tabulator'],
         'terminal': ['Terminal', 'xtermjs'],
@@ -625,11 +656,16 @@ class panel_extension(_pyviz_extension):
         newly_loaded = [arg for arg in args if arg not in panel_extension._loaded_extensions]
         if state.curdoc and state.curdoc not in state._extensions_:
             state._extensions_[state.curdoc] = []
-        if params.get('notifications') and 'notifications' not in args:
+        if params.get('ready_notification') or params.get('disconnect_notification'):
+            params['notifications'] = True
+        if params.get('notifications', config.notifications) and 'notifications' not in args:
             args += ('notifications',)
         for arg in args:
             if arg == 'notifications' and 'notifications' not in params:
                 params['notifications'] = True
+            if arg == 'ipywidgets':
+                from .io.resources import CSS_URLS
+                params['css_files'] = params.get('css_files', []) + [CSS_URLS['font-awesome']]
             if arg in self._imports:
                 try:
                     if (arg == 'ipywidgets' and get_ipython() and # noqa (get_ipython)
@@ -781,15 +817,13 @@ class panel_extension(_pyviz_extension):
             return
 
         # Try to detect environment so that we can enable comms
-        try:
-            import google.colab  # noqa
+        if "google.colab" in sys.modules:
             config.comms = "colab"
             return
-        except ImportError:
-            pass
 
-        if "VSCODE_PID" in os.environ:
+        if "VSCODE_CWD" in os.environ or "VSCODE_PID" in os.environ:
             config.comms = "vscode"
+            self._ignore_bokeh_warnings()
             return
 
     def _apply_signatures(self):
@@ -841,6 +875,11 @@ class panel_extension(_pyviz_extension):
         """
         from .entry_points import load_entry_points
         load_entry_points('panel.extension')
+
+    def _ignore_bokeh_warnings(self):
+        from bokeh.util.warnings import BokehUserWarning
+        warnings.filterwarnings("ignore", category=BokehUserWarning, message="reference already known")
+
 
 #---------------------------------------------------------------------
 # Private API

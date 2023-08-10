@@ -1,10 +1,10 @@
 import {undisplay} from "@bokehjs/core/dom"
 import {isArray} from "@bokehjs/core/util/types"
-import {build_views} from "@bokehjs/core/build_views"
 import {ModelEvent} from "@bokehjs/core/bokeh_events"
 import {div} from "@bokehjs/core/dom"
 import {Enum} from "@bokehjs/core/kinds"
 import * as p from "@bokehjs/core/properties";
+import {LayoutDOM} from "@bokehjs/models/layouts/layout_dom"
 import {ColumnDataSource} from "@bokehjs/models/sources/column_data_source"
 import {TableColumn} from "@bokehjs/models/widgets/tables"
 import {Attrs} from "@bokehjs/core/types"
@@ -283,7 +283,7 @@ export class DataTabulatorView extends HTMLBoxView {
   tabulator: any;
   columns: Map<string, any> = new Map();
   _tabulator_cell_updating: boolean=false
-  _updating_page: boolean = true
+  _updating_page: boolean = false
   _updating_sort: boolean = false
   _selection_updating: boolean = false
   _initializing: boolean
@@ -341,9 +341,11 @@ export class DataTabulatorView extends HTMLBoxView {
       if (!this._updating_page)
         this.setPage()
     })
+    this.connect(p.visible.change, () => this.setVisibility())
     this.connect(p.max_page.change, () => this.setMaxPage())
     this.connect(p.frozen_rows.change, () => this.setFrozen())
     this.connect(p.sorters.change, () => this.setSorters())
+    this.connect(p.theme_classes.change, () => this.setCSSClasses(this.tabulator.element))
     this.connect(this.model.source.properties.data.change, () => this.setData())
     this.connect(this.model.source.streaming, () => this.addData())
     this.connect(this.model.source.patching, () => {
@@ -407,11 +409,18 @@ export class DataTabulatorView extends HTMLBoxView {
     this._initializing = false
   }
 
+  setCSSClasses(el: HTMLDivElement): void {
+    el.className = "pnx-tabulator tabulator"
+    for (const cls of this.model.theme_classes)
+      el.classList.add(cls)
+  }
+
   render(): void {
     super.render()
     this._initializing = true
     const container = div({style: "display: contents;"})
-    const el = div({class: "pnx-tabulator", style: "width: 100%; height: 100%"})
+    const el = div({style: "width: 100%; height: 100%; visibility: hidden;"})
+    this.setCSSClasses(el)
     container.appendChild(el)
     this.shadow_el.appendChild(container)
 
@@ -422,6 +431,8 @@ export class DataTabulatorView extends HTMLBoxView {
   }
 
   style_redraw(): void {
+    if (this.model.visible)
+      this.tabulator.element.style.visibility = 'visible';
     if (!this._initializing && !this._building)
       this.redraw()
   }
@@ -454,7 +465,6 @@ export class DataTabulatorView extends HTMLBoxView {
     this.tabulator.on("scrollVertical", debounce(() => {
       this.setStyles()
     }, 50, false))
-    this.tabulator.on("rowFormatter", (row: any) => this._render_row(row))
 
     // Sync state with model
     this.tabulator.on("rowSelectionChanged", (data: any, rows: any) => this.rowSelectionChanged(data, rows))
@@ -475,6 +485,11 @@ export class DataTabulatorView extends HTMLBoxView {
     this.tabulator.on("pageLoaded", (pageno: number) => {
       this.updatePage(pageno)
     })
+    this.tabulator.on("renderComplete", () => {
+      if (this._building)
+	return
+      this.postUpdate()
+    });
     this.tabulator.on("dataSorting", (sorters: any[]) => {
       const sorts = []
       for (const s of sorters) {
@@ -560,6 +575,7 @@ export class DataTabulatorView extends HTMLBoxView {
       paginationSize: this.model.page_size,
       paginationInitialPage: 1,
       groupBy: this.groupBy,
+      rowFormatter: (row: any) => this._render_row(row),
       frozenRows: (row: any) => {
 	return this.model.frozen_rows.length ? this.model.frozen_rows.includes(row._row.data._index) : false
       }
@@ -582,24 +598,31 @@ export class DataTabulatorView extends HTMLBoxView {
     }
   }
 
+  get child_models(): LayoutDOM[] {
+    const children = []
+    for (const idx of this.model.expanded) {
+      if (this.model.children.has(idx))
+        children.push(this.model.children.get(idx))
+    }
+    return children
+  }
+
   renderChildren(): void {
     new Promise(async (resolve: any) => {
-      const children = []
-      for (const idx of this.model.expanded) {
-        if (this.model.children.has(idx))
-          children.push(this.model.children.get(idx))
-      }
-      await build_views(this._child_views, children, {parent: (null as any)})
+      await this.build_child_views()
       resolve(null)
     }).then(() => {
       for (const r of this.model.expanded) {
         const row = this.tabulator.getRow(r)
-        this._render_row(row)
+        this._render_row(row, false)
       }
+      this._update_children()
+      this.tabulator.rowManager.adjustTableSize()
+      this.invalidate_layout()
     })
   }
 
-  _render_row(row: any): void {
+  _render_row(row: any, resize: boolean = true): void {
     const index = row._row?.data._index
     if (!this.model.expanded.includes(index) || !this.model.children.has(index))
       return
@@ -607,23 +630,20 @@ export class DataTabulatorView extends HTMLBoxView {
     const view = this._child_views.get(model)
     if (view == null)
       return
-    (view as any)._parent = this
     const rowEl = row.getElement()
-    let viewEl = rowEl.children[rowEl.children.length-1]
-    if (viewEl.className === 'bk') {
-      if (viewEl.children.length)
-        return
-    } else {
-      viewEl = null
-    }
-    if (viewEl == null) {
-      const style = getComputedStyle(this.tabulator.element.children[1].children[0])
-      const bg = style.backgroundColor
-      const neg_margin = "-" + rowEl.style.paddingLeft
-      viewEl = div({style: "background-color: " + bg +"; margin-left:" + neg_margin})
-    }
+    const style = getComputedStyle(this.tabulator.element.children[1].children[0])
+    const bg = style.backgroundColor
+    const neg_margin = rowEl.style.paddingLeft ? "-" + rowEl.style.paddingLeft : '0';
+    const viewEl = div({style: "background-color: " + bg +"; margin-left:" + neg_margin + "; max-width: 100%; overflow-x: hidden;"})
+    viewEl.appendChild(view.el)
     rowEl.appendChild(viewEl)
-    view.render_to(viewEl)
+    view.render()
+    view.after_render()
+    if (resize) {
+      this._update_children()
+      this.tabulator.rowManager.adjustTableSize()
+      this.invalidate_layout()
+    }
   }
 
   _expand_render(cell: any): string {
@@ -856,8 +876,6 @@ export class DataTabulatorView extends HTMLBoxView {
       this.tabulator.rowManager.setData(data, true, false)
     else
       this.tabulator.setData(data)
-
-    this.postUpdate()
   }
 
   addData(): void {
@@ -865,13 +883,13 @@ export class DataTabulatorView extends HTMLBoxView {
     const last_row = rows[rows.length-1]
     const start = ((last_row?.data._index) || 0)
     this.setData()
-    this.postUpdate()
     if (this.model.follow && last_row)
       this.tabulator.scrollToRow(start, "top", false)
   }
 
   postUpdate(): void {
     this.setSelection()
+    this.setStyles()
   }
 
   updateOrAddData(): void {
@@ -881,13 +899,18 @@ export class DataTabulatorView extends HTMLBoxView {
 
     let data = transform_cds_to_records(this.model.source, true)
     this.tabulator.setData(data)
-    this.postUpdate()
   }
 
   setFrozen(): void {
     for (const row of this.model.frozen_rows) {
       this.tabulator.getRow(row).freeze()
     }
+  }
+
+  setVisibility(): void {
+    if (this.tabulator == null)
+      return
+    this.tabulator.element.style.visibility = this.model.visible ? 'visible' : 'hidden';
   }
 
   updatePage(pageno: number): void {
@@ -1115,6 +1138,7 @@ export namespace DataTabulator {
     source: p.Property<ColumnDataSource>
     sorters: p.Property<any[]>
     cell_styles: p.Property<any>
+    theme_classes: p.Property<string[]>
   }
 }
 
@@ -1159,6 +1183,7 @@ export class DataTabulator extends HTMLBox {
       source:         [ Ref(ColumnDataSource)       ],
       sorters:        [ Array(Any),              [] ],
       cell_styles:    [ Any,                     {} ],
+      theme_classes:  [ Array(String),           [] ],
     }))
   }
 }

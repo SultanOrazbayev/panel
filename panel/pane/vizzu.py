@@ -36,12 +36,12 @@ class Vizzu(ModelPane, SyncableData):
     """
 
     animation = param.Dict(default={}, doc="""
-        Animation settings (see https://lib.vizzuhq.com/latest/reference/modules/vizzu.Anim.html).""")
+        Animation settings (see https://lib.vizzuhq.com/latest/reference/modules/Anim/).""")
 
     config = param.Dict(default={}, doc="""
         The config contains all of the parameters needed to render a
         particular static chart or a state of an animated chart
-        (see https://lib.vizzuhq.com/latest/reference/interfaces/vizzu.Config.Chart.html).""")
+        (see https://lib.vizzuhq.com/latest/reference/interfaces/Config.Chart/).""")
 
     click = param.Parameter(doc="""
         Data associated with the latest click event.""")
@@ -57,6 +57,9 @@ class Vizzu(ModelPane, SyncableData):
     style = param.Dict(default={}, doc="""
         Style configuration of the chart.""")
 
+    tooltip = param.Boolean(default=False, doc="""
+        Whether to enable tooltips on the chart.""")
+
     _data_params: ClassVar[List[str]] = ['object']
 
     _rename: ClassVar[Dict[str, str | None]] = {
@@ -68,8 +71,11 @@ class Vizzu(ModelPane, SyncableData):
     _updates: ClassVar[bool] = True
 
     def __init__(self, object=None, **params):
+        click_handler = params.pop('on_click', None)
         super().__init__(object, **params)
         self._event_handlers = []
+        if click_handler:
+            self.on_click(click_handler)
 
     @classmethod
     def applies(cls, object):
@@ -117,7 +123,7 @@ class Vizzu(ModelPane, SyncableData):
                         columns.append({'name': col, 'type': 'datetime'})
                     elif isinstance(value, str):
                         columns.append({'name': col, 'type': 'dimension'})
-                    elif isinstance(value, (float, np.float, int, np.int)):
+                    elif isinstance(value, (float, np.float_, np.int_, int)):
                         columns.append({'name': col, 'type': 'measure'})
                     else:
                         columns.append({'name': col, 'type': 'dimension'})

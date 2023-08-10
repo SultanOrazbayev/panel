@@ -16,10 +16,14 @@ from typing import (
 
 from bokeh.application.application import SessionContext
 from bokeh.document.document import Document
-from bokeh.document.events import DocumentChangedEvent, ModelChangedEvent
+from bokeh.document.events import (
+    ColumnDataChangedEvent, ColumnsPatchedEvent, ColumnsStreamedEvent,
+    DocumentChangedEvent, ModelChangedEvent,
+)
 from bokeh.models import CustomJS
 
 from ..config import config
+from ..util import param_watchers
 from .loading import LOADING_INDICATOR_CSS_CLASS
 from .model import monkeypatch_events
 from .state import curdoc_locked, state
@@ -29,6 +33,11 @@ logger = logging.getLogger(__name__)
 #---------------------------------------------------------------------
 # Private API
 #---------------------------------------------------------------------
+
+DISPATCH_EVENTS = (
+    ColumnDataChangedEvent, ColumnsPatchedEvent, ColumnsStreamedEvent,
+    ModelChangedEvent
+)
 
 @dataclasses.dataclass
 class Request:
@@ -82,10 +91,10 @@ def _cleanup_doc(doc, destroy=True):
                 pane._hooks = []
                 for p in pane.select():
                     p._hooks = []
-                    p._param_watchers = {}
+                    param_watchers(p, {})
                     p._documents = {}
                     p._internal_callbacks = {}
-            pane._param_watchers = {}
+            param_watchers(pane, {})
             pane._documents = {}
             pane._internal_callbacks = {}
         else:
@@ -246,7 +255,7 @@ def unlocked() -> Iterator:
         monkeypatch_events(events)
         remaining_events, dispatch_events = [], []
         for event in events:
-            if isinstance(event, ModelChangedEvent) and not locked:
+            if isinstance(event, DISPATCH_EVENTS) and not locked:
                 dispatch_events.append(event)
             else:
                 remaining_events.append(event)

@@ -72,6 +72,8 @@ class _SliderBase(Widget):
     def __init__(self, **params):
         if 'value' in params and 'value_throttled' in self.param:
             params['value_throttled'] = params['value']
+        if 'orientation' == 'vertical':
+            params['height'] = self.param.width.default
         super().__init__(**params)
 
     def __repr__(self, depth=0):
@@ -812,6 +814,7 @@ class _EditableContinuousSlider(CompositeWidget):
 
         label = Row(self._label, self._value_edit)
         self._composite.extend([label, self._slider])
+        self._update_disabled()
         self._update_editable()
         self._update_layout()
         self._update_name()
@@ -858,9 +861,13 @@ class _EditableContinuousSlider(CompositeWidget):
             w = (self.width or 300)//4
             self._value_edit.width = w
 
-    @param.depends('editable', watch=True)
+    @param.depends('disabled', 'editable', watch=True)
     def _update_editable(self):
-        self._value_edit.disabled = not self.editable
+        self._value_edit.disabled = (not self.editable) or self.disabled
+
+    @param.depends('disabled', watch=True)
+    def _update_disabled(self):
+        self._slider.disabled = self.disabled
 
     @param.depends('name', watch=True)
     def _update_name(self):
@@ -1060,6 +1067,7 @@ class EditableRangeSlider(CompositeWidget, _SliderBase):
         }
         """)
         self._update_editable()
+        self._update_disabled()
         self._update_layout()
         self._update_name()
         self._update_slider()
@@ -1102,10 +1110,14 @@ class EditableRangeSlider(CompositeWidget, _SliderBase):
             start = params.get("start", end - params.get("step", 1))
             params["value"] = (start, end)
 
-    @param.depends('editable', watch=True)
+    @param.depends('disabled', watch=True)
+    def _update_disabled(self):
+        self._slider.disabled = self.disabled
+
+    @param.depends('disabled', 'editable', watch=True)
     def _update_editable(self):
-        self._start_edit.disabled = not self.editable[0]
-        self._end_edit.disabled = not self.editable[1]
+        self._start_edit.disabled = (not self.editable[0]) or self.disabled
+        self._end_edit.disabled = (not self.editable[1]) or self.disabled
 
     @param.depends('name', watch=True)
     def _update_name(self):
